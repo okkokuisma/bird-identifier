@@ -32,7 +32,9 @@ def parse_multimedia(occurences):
     return multimedia_df
 
 def download_songs(multimedia_df):
-    for id, url in zip(multimedia_df['gbifID'].values, multimedia_df['identifier'].values):
+    for i, (id, url) in enumerate(zip(multimedia_df['gbifID'].values, multimedia_df['identifier'].values)):
+        if (i % 10000 == 0):
+            print('Downloading file [%d]/[%d]\r'%(i, multimedia_df.shape[0]), end="")
         path = f"/Volumes/COCO-DATA/songs/{id}"
         try:
             if not os.path.isfile(path):
@@ -46,4 +48,4 @@ def download_songs(multimedia_df):
 species = parse_species()
 occurences = get_occurences(species)
 multimedia_df = parse_multimedia(occurences)
-download_songs(multimedia_df.loc[:99999, :])
+download_songs(multimedia_df.loc[100000:, :])
