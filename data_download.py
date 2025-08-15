@@ -1,51 +1,41 @@
-import os
-import pandas as pd
+from os import path, walk
 import requests
+from pydub import AudioSegment
+import io 
 
-def parse_species():
-    with open('/Volumes/COCO-DATA/0000764-250426092105405/bird_species.txt') as f:
-        rows = []
-        row = []
-        for l in f:
-            if not (l.startswith('Lahko') or l.startswith('Heimo') or l.strip() == 'C' or l.strip() == 'B') and l.strip():
-                row.append(l.strip())
-                if (len(row) == 5):
-                    rows.append(row)
-                    row = []
-
-    species = pd.DataFrame(rows, columns=['abb', 'scientific', 'finnish', 'swedish', 'english'])
-    species = species.loc[:, ['scientific', 'finnish', 'english']]
-    return species
-
-def get_occurences(species):
-    d = pd.read_csv('/Volumes/COCO-DATA/0000764-250426092105405/occurrence.txt', sep='\t', skiprows=[5644])
-    cols = [ 'gbifID', 'species', 'decimalLatitude', 'decimalLongitude' ]
-    d = d.loc[:, cols]
-    occurences = d[d['species'].isin(species['scientific'])]
-    return occurences
-
-def parse_multimedia(occurences):
-    multimedia_df = pd.read_csv('/Volumes/COCO-DATA/0000764-250426092105405/multimedia.txt', sep='\t')
-    multimedia_df = multimedia_df[multimedia_df['gbifID'].isin(occurences['gbifID'])]
-    multimedia_df = multimedia_df[multimedia_df['format'] == 'audio/mpeg']
-    multimedia_df = multimedia_df.reset_index(drop=True)
-    return multimedia_df
-
-def download_songs(multimedia_df):
-    for i, (id, url) in enumerate(zip(multimedia_df['gbifID'].values, multimedia_df['identifier'].values)):
-        if (i % 10000 == 0):
-            print('Downloading file [%d]/[%d]\r'%(i, multimedia_df.shape[0]), end="")
-        path = f"/Volumes/COCO-DATA/songs/{id}"
+def download_songs(multimedia_df, song_dir_path = '/Volumes/COCO-DATA/songs/'):
+    for i, (id, url, format) in enumerate(zip(multimedia_df['gbifID'], multimedia_df['identifier'], multimedia_df['format'])):
+        song_path = path.join(song_dir_path, str(id))
         try:
-            if not os.path.isfile(path):
-                res = requests.get(url)
+            if not path.isfile(song_path):
+                res = requests.get(url, timeout=10)
 
-                with open(path, 'wb+') as f:
-                    f.write(bytes(res.content))
+                if format == 'audio/vnd.wave':
+                    raw = io.BytesIO(res.content)     
+                    audio = AudioSegment.from_file(raw, format='wav')
+                    audio.export(song_path, format='mp3')
+                else:
+                    with open(song_path, 'wb+') as f:
+                        f.write(bytes(res.content))
         except:
             continue
 
-species = parse_species()
-occurences = get_occurences(species)
-multimedia_df = parse_multimedia(occurences)
-download_songs(multimedia_df.loc[100000:, :])
+        if (i % 100 == 0):
+            print('Downloaded file [%d]/[%d]\r'%(i, multimedia_df.shape[0]), end="")
+
+
+def get_downloaded_song_ids(song_dir_path = '/Volumes/COCO-DATA/songs/'):
+    fs = []
+    for _, _, fnames in walk(song_dir_path):
+        for f in fnames:
+            fs.append(int(f))
+    
+    return fs
+
+def get_preprocessed_song_ids(song_dir_path = '/Volumes/COCO-DATA/songs_npy/'):
+    fs = []
+    for _, _, fnames in walk(song_dir_path):
+        for f in fnames:
+            fs.append(int(f.strip('.npy')))
+    
+    return fs

@@ -1,37 +1,13 @@
 import numpy as np
 import pandas as pd
 import librosa
-import matplotlib.pyplot as plt
 from scipy.ndimage import binary_erosion, binary_dilation
 import scipy.signal as sig
-import os
-# import warnings
-# warnings.filterwarnings("ignore")
-
-def parse_species():
-    species = pd.read_csv('/Users/okkokuisma/projektit/birds/occurence_data/taxon-export.tsv', sep='\t')
-    species = species.dropna()
-    species = species.sort_values('Havaintomäärä Suomesta', ascending=False).iloc[:260, :]
-    return species
-
-def load_occurrences(path = '/Volumes/COCO-DATA/0000764-250426092105405/occurrence.txt'):
-    return pd.read_csv(path, sep='\t', skiprows=[5644])
-
-def drop_occurrence_cols(occurrences, cols_to_keep = [ 'gbifID', 'species', 'decimalLatitude', 'decimalLongitude' ]):
-    return occurrences.loc[:, cols_to_keep]
-
-def filter_occurrences(occurrences, species):
-    occurrences = occurrences[occurrences['species'].isin(species['Tieteellinen nimi'])]
-    mask = (occurrences.groupby('species').count()['gbifID'] < 50) 
-    dropped_species = occurrences.groupby('species').count()['gbifID'][mask]
-    occurrences = occurrences.loc[~occurrences['species'].isin(dropped_species.index.to_list()), :]
-    return occurrences
-
-def get_occurrences():
-    occurrences = load_occurrences()
-    occurrences = drop_occurrence_cols(occurrences)
-    occurrences = filter_occurrences(occurrences, species)
-    return occurrences
+from os import path
+import uuid
+import torchaudio.transforms as T
+import torch
+from occurrence_data import get_occurrence_count_by_species, load_filtered_occurrences
 
 def load_signal(path, sr = 48000):
     signal, sr = librosa.load(path = path, sr = sr)
@@ -54,11 +30,12 @@ def calculate_spectrogram(signal, n_fft=512, hop_length=384, win_length=512):
         win_length=win_length,
         window="hann"
     )
-    return np.abs(spectrogram)
+    return spectrogram
 
 def separate_bird_song(spectrogram):
-    spectrogram_max = np.max(spectrogram)
-    spectrogram_normalized = spectrogram / spectrogram_max
+    spectrogram_abs = np.abs(spectrogram)
+    spectrogram_max = np.max(spectrogram_abs)
+    spectrogram_normalized = spectrogram_abs / spectrogram_max
     col_means = np.mean(spectrogram_normalized, axis=0)
     row_means = np.mean(spectrogram_normalized, axis=1)
     mask = (spectrogram_normalized >= 3 * col_means) & (spectrogram_normalized >= 3 * row_means[:, np.newaxis])
@@ -84,19 +61,57 @@ def audio_preprocessing_pipeline(
     signal_segment = separate_bird_song(spectrogram)
     return signal_segment
 
-def preprocess_and_save(occurrences):
+def preprocess_and_save(occurrences, song_dir_path = '/Volumes/COCO-DATA/songs/', npy_dir_path = '/Volumes/COCO-DATA/songs_npy/'):
     for i, id in enumerate(occurrences['gbifID'].values):
-        if (i % 100 == 0):
-            print('Processing file [%d]/[%d]\r'%(i, occurrences.shape[0]), end="")
-        song_path = f"/Volumes/COCO-DATA/songs/{id}"
-        npy_path = f"/Volumes/COCO-DATA/songs_npy/{id}.npy"
+        song_path = path.join(song_dir_path, str(id))
+        npy_path = path.join(npy_dir_path, str(id) + '.npy')
         try:
-            if os.path.isfile(song_path):
+            if not path.isfile(npy_path):
                 segment = audio_preprocessing_pipeline(song_path)
-                np.save(npy_path, segment)
+                np.save(npy_path, np.abs(segment))
         except:
             continue
 
-species = parse_species()
-occurrences = get_occurrences()
-preprocess_and_save(occurrences)
+        if (i % 100 == 0):
+            print('Processed file [%d]/[%d]\r'%(i, occurrences.shape[0]), end="")
+
+def augment_song(signal):
+    time_stretch = T.TimeStretch(hop_length = 384, n_freq=257, fixed_rate=1.2)
+    freq_masking = T.FrequencyMasking(freq_mask_param=80)
+    time_masking = T.TimeMasking(time_mask_param=80)
+
+    stretched = time_stretch(torch.tensor(signal))
+    f_masked = freq_masking(np.abs(stretched))
+    t_masked = time_masking(f_masked)
+
+    return t_masked
+
+def save_augmented(augmented_song, dir_path = '/Volumes/COCO-DATA/songs_npy/'):
+    new_id = uuid.uuid1().int
+    file_path = dir_path + f"{new_id}.npy"
+    np.save(file_path, augmented_song)
+    return new_id
+
+def create_augmented_data_points(file_path = '/Volumes/COCO-DATA/0000764-250426092105405/augmented_occurrences.parquet', song_dir_path = '/Volumes/COCO-DATA/songs'):
+    occurrences = load_filtered_occurrences()
+    num_occurrences_by_species = get_occurrence_count_by_species(occurrences)
+    diff = (1000 - num_occurrences_by_species) # at least 1000 data points for every species
+    new_data_points = []
+
+    for s, d in zip(diff.index, diff.values):
+        if d > 0:
+            species_occurrences = occurrences.loc[occurrences['species'] == s, :]['gbifID']
+            occurrence_sample = species_occurrences.sample(d, replace=True).values
+
+            for id in occurrence_sample:
+                try:
+                    song_path = path.join(song_dir_path, str(id))
+                    signal = audio_preprocessing_pipeline(song_path)
+                    augmented = augment_song(signal)
+                    augmented_id = save_augmented(augmented)
+                    new_data_points.append((augmented_id, s))
+                except:
+                    continue
+
+    augmented_data_points = pd.DataFrame(new_data_points)
+    augmented_data_points.to_parquet(file_path)
