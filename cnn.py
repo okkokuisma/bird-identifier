@@ -3,12 +3,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import webdataset as wds
-from torch.utils.data import DataLoader, random_split
-import numpy as np
-from occurrence_data import load_filtered_occurrences
-from os import path
-from data_download import get_preprocessed_song_ids
-
+from torch.utils.data import DataLoader
+import os
+from train import set_seed, train_loop, load_checkpoint
+from data_preprocess import augment_song
 
 # %%
 class CNNClassifier(nn.Module):
@@ -36,11 +34,18 @@ class CNNClassifier(nn.Module):
             nn.MaxPool2d(2)
         )
 
+        self.conv_block4 = nn.Sequential(
+            nn.Conv2d(128, 256, kernel_size=3, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(),
+            nn.MaxPool2d(2)
+        )
+
         self.global_pool = nn.AdaptiveAvgPool2d((1, 1))
 
         self.classifier = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(128, 64),
+            nn.Linear(256, 64),
             nn.ReLU(),
             nn.Dropout(0.4),
             nn.Linear(64, num_classes)
@@ -50,101 +55,46 @@ class CNNClassifier(nn.Module):
         x = self.conv_block1(x)  # [batch, 32, H/2, W/2]
         x = self.conv_block2(x)  # [batch, 64, H/4, W/4]
         x = self.conv_block3(x)  # [batch, 128, H/8, W/8]
+        x = self.conv_block4(x)  # [batch, 256, H/16, W/16]
         x = self.global_pool(x)  # [batch, 128, 1, 1]
         logits = self.classifier(x)  # [batch, num_classes]
         return logits
 
-# # %%
-# class SpectrogramSegmentDataset(Dataset):
-
-#     def __init__(self, occurrences, root_dir, transform=None):
-#         """
-#         Arguments:
-#             csv_file (string): Path to the csv file with annotations.
-#             root_dir (string): Directory with all the images.
-#             transform (callable, optional): Optional transform to be applied
-#                 on a sample.
-#         """
-#         self.occurrences = occurrences
-#         self.root_dir = root_dir
-#         self.transform = transform
-#         self.ids = occurrences.iloc[:,0].tolist()
-#         self.labels = occurrences.iloc[:,1].astype(int).tolist()
-
-#     def __len__(self):
-#         return len(self.occurrences)
-
-#     def __getitem__(self, idx):
-#         if torch.is_tensor(idx):
-#             idx = idx.tolist()
-
-#         id = self.ids[idx]
-#         spectrogram_path = path.join(self.root_dir, str(id) + '.npy')
-#         spectrogram = torch.tensor(np.load(spectrogram_path), dtype=torch.float32)
-
-#         species = self.labels[idx]
-#         sample = {'spectrogram': spectrogram, 'species': species}
-
-#         if self.transform:
-#             sample = self.transform(sample)
-
-#         return sample
-
-
-# # %%
-# class Pad():
-
-    # def __init__(self, padded_length):
-    #     assert isinstance(padded_length, int)
-    #     self.padded_length = padded_length
-
-    # def __call__(self, sample):
-    #     spectrogram, species = sample['spectrogram'], sample['species']
-    #     if spectrogram.shape[1] < self.padded_length:
-    #         pad_t = self.padded_length - spectrogram.shape[1]
-    #         p = (0, pad_t)
-    #         spectrogram = F.pad(spectrogram, p, "constant", 0)
-    #     spectrogram = spectrogram[None, :, :]
-    #     return {'spectrogram': spectrogram, 'species': species}
-
 def preprocess(sample):
     spectrogram = torch.tensor(sample[0], dtype=torch.float32)
+    spectrogram = augment_song(spectrogram[None])
     label  = torch.tensor(sample[1]['species'], dtype=torch.long)
     return spectrogram, label
 
 def pad_collate(batch):
     specs = []
     labels = []
-    for spect, species in batch:
-        L = spect.shape[-1]
+    for spectrogram, species in batch:
+        L = spectrogram.shape[-1]
         if L < 280:
             pad = 280 - L
-            spect = F.pad(spect, (0,pad))
-        specs.append(spect)
+            spectrogram = F.pad(spectrogram, (0,pad))
+        specs.append(spectrogram)
         labels.append(species)
-    specs = torch.stack([s[None] for s in specs])  # [B,1,F,T]
+    specs = torch.stack([s for s in specs])  # [B,1,F,T]
     labels = torch.tensor(labels, dtype=torch.long)
     return specs, labels
-
 # %%
 if __name__ == '__main__':
-    if not torch.backends.mps.is_available():
-        if not torch.backends.mps.is_built():
-            print("MPS not available because the current PyTorch install was not "
-                "built with MPS enabled.")
-        else:
-            print("MPS not available because the current MacOS version is not 12.3+ "
-                "and/or you do not have an MPS-enabled device on this machine.")
-        device = torch.device('cpu')
+    if torch.cuda.is_available():
+        torch.device('cuda')
+    if torch.backends.mps.is_available():
+        device = torch.device('mps')
     else:
-        device = torch.device("mps")
+        device = torch.device('cpu')
+
+    set_seed(42)
     
-    # occ = load_filtered_occurrences()
-    # fs = get_preprocessed_song_ids()
-    # occ = occ[occ['gbifID'].isin(fs)]
-    # occ['species'] = occ['species'].cat.codes
-    # dataset = SpectrogramSegmentDataset(occurrences=occ, root_dir='/Volumes/COCO-DATA/songs_npy/', transform=Pad(280), device=device)
-    urls = "/Volumes/COCO-DATA/shards/shard-{000000..000240}.tar"
+    start_epoch = 0
+    batch_size = 64
+    lr = 0.002
+
+    urls = '/Volumes/COCO-DATA/train_shards/shard-{000000..000229}.tar'
     dataset = (
         wds.WebDataset(urls, shardshuffle=1000)
         .decode()
@@ -152,43 +102,21 @@ if __name__ == '__main__':
         .to_tuple('spectrogram', 'species') 
         .map(preprocess)
     )
-
-
-    # train, val, test = random_split(dataset, [0.7, 0.15, 0.15])
-
-    num_epochs = 50
-    batch_size = 128
-    lr = 0.005
-
-    dataloader = DataLoader(dataset, batch_size=batch_size, collate_fn=pad_collate, num_workers=10)
+    dataloader = DataLoader(dataset, batch_size=batch_size, collate_fn=pad_collate, num_workers=4)
+    
     model = CNNClassifier(num_classes=231).to(device)
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=10)
 
-    printing_interval = num_epochs // 10
-    losses_ = []
+    ckpt_dir = './checkpoints'
+    os.makedirs(ckpt_dir, exist_ok=True)
+    ckpt_path = os.path.join(ckpt_dir, 'checkpoint_last.pth')
 
-    model.train()
-    for epoch in range(0, num_epochs):
-        running_loss = 0.0
-        n = 0
-        for b in dataloader:
-            X = b[0].to(device)
-            y = b[1].to(device)
-            y_hat = model(X)
-            train_loss = criterion(y_hat, y)
-            n += 1
-            print(n)
-            train_loss.backward()
-            optimizer.step()
-            optimizer.zero_grad()
+    if os.path.exists(ckpt_path):
+        checkpoint = load_checkpoint(ckpt_path, model, optimizer, scheduler, map_location=device)
+        loaded_epoch = checkpoint['epoch']
+        start_epoch = loaded_epoch + 1
 
-            running_loss += train_loss.item()
-
-        avg_loss = running_loss / len(dataloader)
-        losses_.append(avg_loss)
-
-        # if(epoch % printing_interval == 1):
-        #     print(f"Epoch [{epoch+1}/{num_epochs}] - Loss: {avg_loss:.6f}")
-        print(f"Epoch [{epoch+1}/{num_epochs}] - Loss: {avg_loss:.6f}")
+    train_loop(start_epoch, 250, model, optimizer, criterion, scheduler, dataloader, device, ckpt_path, 1)
 

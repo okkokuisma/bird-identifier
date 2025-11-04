@@ -1,9 +1,10 @@
 from os import path, walk
 import requests
 from pydub import AudioSegment
-import io 
+import io
+from occurrence_data import load_filtered_occurrences, parse_multimedia
 
-def download_songs(multimedia_df, song_dir_path = '/Volumes/COCO-DATA/songs/'):
+def download_songs(multimedia_df, song_dir_path='/Volumes/COCO-DATA/songs/'):
     for i, (id, url, format) in enumerate(zip(multimedia_df['gbifID'], multimedia_df['identifier'], multimedia_df['format'])):
         song_path = path.join(song_dir_path, str(id))
         try:
@@ -24,7 +25,7 @@ def download_songs(multimedia_df, song_dir_path = '/Volumes/COCO-DATA/songs/'):
             print('Downloaded file [%d]/[%d]\r'%(i, multimedia_df.shape[0]), end="")
 
 
-def get_downloaded_song_ids(song_dir_path = '/Volumes/COCO-DATA/songs/'):
+def get_downloaded_song_ids(song_dir_path='/Volumes/COCO-DATA/songs/'):
     fs = []
     for _, _, fnames in walk(song_dir_path):
         for f in fnames:
@@ -32,10 +33,15 @@ def get_downloaded_song_ids(song_dir_path = '/Volumes/COCO-DATA/songs/'):
     
     return fs
 
-def get_preprocessed_song_ids(song_dir_path = '/Volumes/COCO-DATA/songs_npy/'):
+def get_preprocessed_song_ids(song_dir_path='/Volumes/COCO-DATA/songs_npy/'):
     fs = []
     for _, _, fnames in walk(song_dir_path):
         for f in fnames:
             fs.append(int(f.strip('.npy')))
     
     return fs
+
+if __name__ == '__main__':
+    occurrences = load_filtered_occurrences()
+    multimedia_df = parse_multimedia(occurrences)
+    download_songs(multimedia_df)

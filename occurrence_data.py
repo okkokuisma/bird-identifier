@@ -1,15 +1,15 @@
 import pandas as pd
 
-def parse_species(file_path = '/Users/okkokuisma/projektit/birds/occurence_data/taxon-export.tsv'):
+def parse_species(file_path='/Users/okkokuisma/projektit/birds/occurence_data/taxon-export.tsv'):
     species = pd.read_csv(file_path, sep='\t')
     species = species.dropna()
     species = species.sort_values('Havaintomäärä Suomesta', ascending=False).iloc[:260, :]
     return species
 
-def load_occurrences(file_path = '/Volumes/COCO-DATA/0000764-250426092105405/occurrence.txt'):
+def load_occurrences(file_path='/Volumes/COCO-DATA/0000764-250426092105405/occurrence.txt'):
     return pd.read_csv(file_path, sep='\t', skiprows=[5644])
 
-def drop_occurrence_cols(occurrences, cols_to_keep = [ 'gbifID', 'species', 'decimalLatitude', 'decimalLongitude' ]):
+def drop_occurrence_cols(occurrences, cols_to_keep=['gbifID', 'species', 'decimalLatitude', 'decimalLongitude']):
     return occurrences.loc[:, cols_to_keep]
 
 def filter_finnish_species(occurrences, species):
@@ -38,13 +38,16 @@ def get_occurrences():
     occurrences['species'] = pd.Categorical(occurrences['species'])
     return occurrences
 
-def save_filtered_data(occurrences, file_path = '/Volumes/COCO-DATA/0000764-250426092105405/filtered_occurrence_data.parquet'):
+def save_filtered_data(occurrences, file_path='/Volumes/COCO-DATA/0000764-250426092105405/filtered_occurrence_data.parquet'):
     occurrences.to_parquet(file_path)
 
-def load_filtered_occurrences(file_path = '/Volumes/COCO-DATA/0000764-250426092105405/filtered_occurrence_data.parquet'):
+def load_filtered_occurrences(file_path='/Volumes/COCO-DATA/0000764-250426092105405/filtered_occurrence_data.parquet'):
     return pd.read_parquet(file_path)
 
-def parse_multimedia(occurences, file_path = '/Volumes/COCO-DATA/0000764-250426092105405/multimedia.txt'):
+def load_augmented_occurrences(file_path='/Volumes/COCO-DATA/0000764-250426092105405/augmented_occurrences.parquet'):
+    return pd.read_parquet(file_path)
+
+def parse_multimedia(occurences, file_path='/Volumes/COCO-DATA/0000764-250426092105405/multimedia.txt'):
     multimedia_df = pd.read_csv(file_path, sep='\t')
     multimedia_df = multimedia_df[multimedia_df['gbifID'].isin(occurences['gbifID'])]
     multimedia_df = multimedia_df[multimedia_df['type'] == 'Sound']
